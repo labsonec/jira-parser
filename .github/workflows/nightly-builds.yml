@@ -102,7 +102,11 @@ jobs:
           $archivePath = "dist/$archive"
           Compress-Archive -Path "dist/${{ matrix.executable }}" -DestinationPath $archivePath
           $hash = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLowerInvariant()
-          "$hash  $archive" | Set-Content -Encoding ascii "$archivePath.sha256"
+          [System.IO.File]::WriteAllText(
+            "$archivePath.sha256",
+            "$hash  $archive`n",
+            [System.Text.Encoding]::ASCII
+          )
 
       - name: Package Unix binary and checksum
         if: runner.os != 'Windows'
