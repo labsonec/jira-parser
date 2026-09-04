@@ -102,7 +102,11 @@ jobs:
           $archivePath = "dist/$archive"
           Compress-Archive -Path "dist/${{ matrix.executable }}" -DestinationPath $archivePath
           $hash = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLowerInvariant()
-          "$hash  $archive" | Set-Content -Encoding ascii "$archivePath.sha256"
+          [System.IO.File]::WriteAllText(
+            "$archivePath.sha256",
+            "$hash  $archive`n",
+            [System.Text.Encoding]::ASCII
+          )
 
       - name: Package Unix binary and checksum
         if: runner.os != 'Windows'
@@ -127,6 +131,7 @@ jobs:
   publish:
     name: Publish rolling nightly prerelease
     needs: build
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -165,6 +170,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           BUILT_SHA: ${{ github.sha }}
         run: |
           build_date="$(date -u +'%Y-%m-%d')"
