@@ -1,0 +1,192 @@
+name: Nightly builds
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo files
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-test-cargo-
+
+      - name: Run tests
+        run: cargo test --locked
+
+  build:
+    name: Build ${{ matrix.package_name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package_name: jira-parser-windows-x86_64
+            executable: jira-parser.exe
+            archive: jira-parser-windows-x86_64.zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            package_name: jira-parser-linux-x86_64
+            executable: jira-parser
+            archive: jira-parser-linux-x86_64.tar.gz
+          - os: macos-15
+            target: aarch64-apple-darwin
+            package_name: jira-parser-macos-aarch64
+            executable: jira-parser
+            archive: jira-parser-macos-aarch64.tar.gz
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust and target
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Cache Cargo files
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package Windows binary and checksum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.executable }}" "dist/${{ matrix.executable }}"
+          $archive = "${{ matrix.archive }}"
+          $archivePath = "dist/$archive"
+          Compress-Archive -Path "dist/${{ matrix.executable }}" -DestinationPath $archivePath
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -Encoding ascii "$archivePath.sha256"
+
+      - name: Package Unix binary and checksum
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          archive="${{ matrix.archive }}"
+          tar -czf "dist/$archive" -C "target/${{ matrix.target }}/release" "${{ matrix.executable }}"
+          cd dist
+          shasum -a 256 "$archive" > "$archive.sha256"
+
+      - name: Upload package and checksum
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.package_name }}
+          path: |
+            dist/${{ matrix.archive }}
+            dist/${{ matrix.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish rolling nightly prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: jira-parser-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify downloaded assets
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 -c *.sha256
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
+
+      - name: Point nightly tag at the built commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT_SHA: ${{ github.sha }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+              -f sha="$BUILT_SHA" \
+              -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/nightly" \
+              -f sha="$BUILT_SHA" >/dev/null
+          fi
+
+      - name: Create or update nightly prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT_SHA: ${{ github.sha }}
+        run: |
+          build_date="$(date -u +'%Y-%m-%d')"
+          notes_file="${RUNNER_TEMP}/nightly-notes.md"
+          printf 'Automated nightly build.\n\n- Commit: `%s`\n- Build date (UTC): `%s`\n' \
+            "$BUILT_SHA" "$build_date" > "$notes_file"
+
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly \
+              --title "Nightly build" \
+              --target "$BUILT_SHA" \
+              --prerelease \
+              --latest=false \
+              --notes-file "$notes_file"
+          else
+            gh release create nightly \
+              --verify-tag \
+              --title "Nightly build" \
+              --target "$BUILT_SHA" \
+              --prerelease \
+              --latest=false \
+              --notes-file "$notes_file"
+          fi
+
+          gh release upload nightly dist/* --clobber
