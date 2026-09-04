@@ -131,6 +131,7 @@ jobs:
   publish:
     name: Publish rolling nightly prerelease
     needs: build
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -148,18 +149,6 @@ jobs:
           cd dist
           shasum -a 256 -c *.sha256
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
-
-      - name: Verify publication token
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          can_push="$(gh api "repos/${GH_REPO}" --jq '.permissions.push // false')"
-          if [[ "$can_push" != "true" ]]; then
-            echo "::error::GITHUB_TOKEN does not have effective repository write access. Check the publish job's contents: write permission and repository or organization Actions policy."
-            exit 1
-          fi
 
       - name: Point nightly tag at the built commit
         shell: bash
