@@ -19,6 +19,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    outputs:
+      nightly_date: ${{ steps.nightly_metadata.outputs.date }}
+      nightly_commit: ${{ steps.nightly_metadata.outputs.commit }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -42,6 +45,14 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+      - name: Set nightly metadata
+        id: nightly_metadata
+        shell: bash
+        run: |
+          # Compute nightly identity once per workflow run for builds and publishing.
+          printf 'date=%s\n' "$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.package_name }}
@@ -90,6 +101,10 @@ jobs:
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binary
+        # Inject the shared run metadata only into compiled release binaries.
+        env:
+          JIRA_PARSER_NIGHTLY_DATE: ${{ needs.test.outputs.nightly_date }}
+          JIRA_PARSER_NIGHTLY_COMMIT: ${{ needs.test.outputs.nightly_commit }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package Windows binary and checksum
@@ -129,8 +144,11 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Publish rolling nightly prerelease
-    needs: build
+    name: Publish daily nightly prerelease
+    needs:
+      - test
+      - build
+    # Only the default branch may publish repository releases; other refs keep build artifacts.
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
@@ -150,19 +168,21 @@ jobs:
           shasum -a 256 -c *.sha256
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
 
-      - name: Point nightly tag at the built commit
+      - name: Point daily nightly tag at the built commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           BUILT_SHA: ${{ github.sha }}
+          NIGHTLY_TAG: nightly-${{ needs.test.outputs.nightly_date }}
         run: |
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/nightly" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${NIGHTLY_TAG}" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${NIGHTLY_TAG}" \
               -f sha="$BUILT_SHA" \
               -F force=true >/dev/null
           else
             gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/nightly" \
+              -f ref="refs/tags/${NIGHTLY_TAG}" \
               -f sha="$BUILT_SHA" >/dev/null
           fi
 
@@ -172,27 +192,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           BUILT_SHA: ${{ github.sha }}
+          BUILD_DATE: ${{ needs.test.outputs.nightly_date }}
+          SHORT_COMMIT: ${{ needs.test.outputs.nightly_commit }}
+          NIGHTLY_TAG: nightly-${{ needs.test.outputs.nightly_date }}
         run: |
-          build_date="$(date -u +'%Y-%m-%d')"
           notes_file="${RUNNER_TEMP}/nightly-notes.md"
           printf 'Automated nightly build.\n\n- Commit: `%s`\n- Build date (UTC): `%s`\n' \
-            "$BUILT_SHA" "$build_date" > "$notes_file"
+            "$SHORT_COMMIT" "$BUILD_DATE" > "$notes_file"
 
-          if gh release view nightly >/dev/null 2>&1; then
-            gh release edit nightly \
-              --title "Nightly build" \
+          if gh release view "$NIGHTLY_TAG" >/dev/null 2>&1; then
+            gh release edit "$NIGHTLY_TAG" \
+              --title "Nightly build $BUILD_DATE" \
               --target "$BUILT_SHA" \
               --prerelease \
               --latest=false \
               --notes-file "$notes_file"
           else
-            gh release create nightly \
+            gh release create "$NIGHTLY_TAG" \
               --verify-tag \
-              --title "Nightly build" \
+              --title "Nightly build $BUILD_DATE" \
               --target "$BUILT_SHA" \
               --prerelease \
               --latest=false \
               --notes-file "$notes_file"
           fi
 
-          gh release upload nightly dist/* --clobber
+          gh release upload "$NIGHTLY_TAG" dist/* --clobber

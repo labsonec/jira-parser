@@ -19,15 +19,7 @@ Jira-to-Markdown conversion is the intended next direction, but it is **not impl
 
 ### Release binaries
 
-CI builds archives for:
-
-- Windows x86-64: `jira-parser-windows-x86_64.zip`
-- Linux x86-64: `jira-parser-linux-x86_64.tar.gz`
-- macOS Apple Silicon: `jira-parser-macos-aarch64.tar.gz`
-
-Tagged `v*` builds are available as artifacts from the corresponding **Release builds** workflow run. Published release assets, when attached to a GitHub Release, are the preferred stable-preview downloads.
-
-The rolling `nightly` prerelease contains the latest successful default-branch build and SHA-256 checksum files. Nightly binaries may be less stable; workflow artifacts are retained for a limited time.
+When binaries are published, download the archive for Windows x86-64, Linux x86-64, or macOS Apple Silicon from the repository's GitHub Releases page.
 
 This crate is not documented as a crates.io installation. Build it from source when a release binary is not available.
 
@@ -48,12 +40,18 @@ Usage: jira-parser [--markdown-to-jira] --text <TEXT> [--output <PATH|->]
        jira-parser [--markdown-to-jira] -t <TEXT> [-o <PATH|->]
        jira-parser [--markdown-to-jira] --file <PATH> [--output <PATH|->]
        jira-parser [--markdown-to-jira] -f <PATH> [-o <PATH|->]
+       jira-parser --version
+       jira-parser -v
 ```
 
-Exactly one input source is required:
+Exactly one input source is required for parsing or conversion:
 
 - `--text`, `-t`: read the input from the following argument.
 - `--file`, `-f`: read UTF-8 text from a file.
+
+Version options:
+
+- `--version`, `-v`: print the installed `jira-parser` version without requiring input. Version options cannot be combined with any other option.
 
 Output options:
 

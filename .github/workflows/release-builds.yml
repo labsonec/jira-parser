@@ -13,8 +13,39 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release_metadata:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Determine artifact version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # Tag v0.1.0 becomes 0.1.0; manual runs use the Cargo package version.
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            version="${REF_NAME#v}"
+          else
+            version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r 'first(.packages[] | select(.name == "jira-parser") | .version)')"
+          fi
+
+          if [[ -z "$version" || "$version" == "null" ]]; then
+            echo "Unable to determine the release artifact version." >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.package_name }}
+    needs: release_metadata
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,17 +55,17 @@ jobs:
             target: x86_64-pc-windows-msvc
             package_name: jira-parser-windows-x86_64
             executable: jira-parser.exe
-            archive: jira-parser-windows-x86_64.zip
+            archive_extension: zip
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             package_name: jira-parser-linux-x86_64
             executable: jira-parser
-            archive: jira-parser-linux-x86_64.tar.gz
+            archive_extension: tar.gz
           - os: macos-15
             target: aarch64-apple-darwin
             package_name: jira-parser-macos-aarch64
             executable: jira-parser
-            archive: jira-parser-macos-aarch64.tar.gz
+            archive_extension: tar.gz
 
     steps:
       - name: Check out repository
@@ -67,18 +98,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.executable }}" "dist/${{ matrix.executable }}"
-          Compress-Archive -Path "dist/${{ matrix.executable }}" -DestinationPath "dist/${{ matrix.archive }}"
+          $archive = "${{ matrix.package_name }}-${{ needs.release_metadata.outputs.version }}.${{ matrix.archive_extension }}"
+          Compress-Archive -Path "dist/${{ matrix.executable }}" -DestinationPath "dist/$archive"
 
       - name: Package Unix binary
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p dist
-          tar -czf "dist/${{ matrix.archive }}" -C "target/${{ matrix.target }}/release" "${{ matrix.executable }}"
+          archive="${{ matrix.package_name }}-${{ needs.release_metadata.outputs.version }}.${{ matrix.archive_extension }}"
+          tar -czf "dist/$archive" -C "target/${{ matrix.target }}/release" "${{ matrix.executable }}"
 
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.package_name }}
-          path: dist/${{ matrix.archive }}
+          name: ${{ matrix.package_name }}-${{ needs.release_metadata.outputs.version }}
+          path: dist/${{ matrix.package_name }}-${{ needs.release_metadata.outputs.version }}.${{ matrix.archive_extension }}
           if-no-files-found: error
